@@ -21,7 +21,7 @@ class Router:
     api_url: str
     username: str
     password: str
-    dhcp_ranges: list[str]
+    router_ip_range: str
 
 
 @dataclass
@@ -61,20 +61,12 @@ def load_config() -> AppConfig:
     if os.path.exists(nas_config_path):
         with open(nas_config_path, "r") as f:
             data = json.load(f)
-        
+
         # Handle the site-based structure (e.g., {"Milpark": {...}, "Roshcor": {...}})
         for site_name, site_config in data.items():
             if isinstance(site_config, dict) and "api_url" in site_config:
-                # Convert dash-range to CIDR if needed
-                dhcp_range = site_config.get("dhcp_range", "")
-                dhcp_ranges = []
-                
-                if dhcp_range and "-" in dhcp_range:
-                    # Convert "100.64.16.21-100.64.17.254" to CIDR approximation
-                    dhcp_ranges = [convert_range_to_cidr(dhcp_range)]
-                elif dhcp_range:
-                    dhcp_ranges = [dhcp_range]
-                
+                router_ip_range = site_config.get("router_ip_range", "")
+
                 routers.append(
                     Router(
                         site=site_name,
@@ -82,7 +74,7 @@ def load_config() -> AppConfig:
                         api_url=site_config.get("api_url", ""),
                         username=site_config.get("username", ""),
                         password=site_config.get("password", ""),
-                        dhcp_ranges=dhcp_ranges,
+                        router_ip_range=router_ip_range,
                     )
                 )
 
@@ -102,42 +94,20 @@ def load_config() -> AppConfig:
     )
 
 
-def convert_range_to_cidr(ip_range: str) -> str:
-    """
-    Convert IP range like '100.64.16.21-100.64.17.254' to CIDR notation.
-    This is a simplified conversion - for precise control, update your config to use CIDR.
-    """
-    import ipaddress
-    
-    try:
-        start_ip, end_ip = ip_range.split("-")
-        start = ipaddress.IPv4Address(start_ip.strip())
-        end = ipaddress.IPv4Address(end_ip.strip())
-        
-        # Find the network that encompasses both IPs
-        # This is a simplified approach - calculates the smallest network containing the range
-        for prefix_len in range(32, 0, -1):
-            try:
-                # Try to create a network from start IP with this prefix
-                network = ipaddress.IPv4Network(f"{start}/{prefix_len}", strict=False)
-                if start in network and end in network:
-                    return str(network)
-            except:
-                continue
-        
-        # Fallback: use /24 network of start IP
-        return str(ipaddress.IPv4Network(f"{start}/24", strict=False))
-    except Exception as e:
-        # If conversion fails, return a safe default
-        return "0.0.0.0/0"
-
-
 def find_router_by_ip(cfg: AppConfig, ip: str) -> tuple[str, Router | None]:
-    """Find router responsible for a given IP based on DHCP ranges."""
+    """Find router responsible for a given IP based on /23 router_ip_range."""
     import ipaddress
+
+    target_ip = ipaddress.IPv4Address(ip)
 
     for router in cfg.routers:
-        for r in router.dhcp_ranges:
-            if ipaddress.ip_address(ip) in ipaddress.ip_network(r):
+        if not router.router_ip_range:
+            continue
+        try:
+            network = ipaddress.ip_network(router.router_ip_range)
+            if target_ip in network:
                 return router.site, router
+        except ValueError:
+            continue
+
     return "Unknown", None
